@@ -7,6 +7,7 @@ Uses regex patterns to detect AWS keys, private keys, API tokens, and more.
 """
 
 import re
+import os
 from pathlib import Path
 from typing import List, Tuple
 from dataclasses import dataclass
@@ -41,7 +42,7 @@ PATTERNS: List[Tuple[re.Pattern, str, RiskLevel]] = [
     # HIGH RISK Patterns
     (re.compile(r'AKIA[0-9A-Z]{16}'), 'AWS Access Key ID', RiskLevel.HIGH),
     (re.compile(r'aws_secret_access_key\s*[=:]\s*["\']?([A-Za-z0-9/+=]{40})["\']?', re.IGNORECASE), 'AWS Secret Access Key', RiskLevel.HIGH),
-    (re.compile(r'-----BEGIN\s+(RSA|DSA|EC|OPENSSH)\s+PRIVATE KEY-----', re.MULTILINE), 'Private Key', RiskLevel.HIGH),
+    (re.compile(r'-----BEGIN\s+(?:RSA|DSA|EC|OPENSSH)\s+PRIVATE KEY-----'), 'Private Key', RiskLevel.HIGH),
     (re.compile(r'(postgres|mysql|mongodb)://[^:\s]+:[^@\s]+@[^\s]+', re.IGNORECASE), 'Database URL with Password', RiskLevel.HIGH),
     
     # MEDIUM RISK Patterns
@@ -89,7 +90,7 @@ def mask_secret(snippet: str, secret_type: str) -> str:
     
     # For AWS keys, show first 4 and mask the rest
     if 'AWS' in secret_type and snippet.startswith('AKIA'):
-        return snippet[:4] + '*' * min(8, len(snippet) - 4)
+        return snippet[:4] + '*' * (len(snippet) - 4)
     
     # For tokens, show first 4-6 chars and mask
     if len(snippet) > 20:
@@ -108,6 +109,9 @@ def scan_file(file_path: Path) -> List[SecretMatch]:
     try:
         with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
             for line_num, line in enumerate(f, start=1):
+                if len(line) > 10000:  # Skip very long lines to prevent performance issues
+                    continue
+                    
                 for pattern, secret_type, risk_level in PATTERNS:
                     pattern_matches = pattern.finditer(line)
                     for match in pattern_matches:
@@ -141,9 +145,14 @@ def scan_directory(root_dir: Path) -> List[SecretMatch]:
     
     # Get all files to scan (for progress tracking)
     files_to_scan = []
-    for path in root_dir.rglob('*'):
-        if path.is_file() and not should_ignore_path(path):
-            files_to_scan.append(path)
+    for dirpath, dirnames, filenames in os.walk(root_dir):
+        # Prune ignored directories
+        dirnames[:] = [d for d in dirnames if d not in IGNORED_DIRS]
+        
+        for filename in filenames:
+            path = Path(dirpath) / filename
+            if not should_ignore_path(path):
+                files_to_scan.append(path)
     
     with Progress(
         SpinnerColumn(),
